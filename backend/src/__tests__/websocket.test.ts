@@ -157,6 +157,30 @@ describe('WebSocket security — ActivityFeed', () => {
     ws.close();
   }, 5000);
 
+  it('broadcasts market:created events to global market subscribers', async () => {
+    const ws = await connect(port);
+    ws.send(JSON.stringify({ type: 'auth', token: makeActivityFeedToken() }));
+    await new Promise((r) => setImmediate(r));
+    ws.send(JSON.stringify({ type: 'subscribe_market_created' }));
+    await new Promise((r) => setImmediate(r));
+
+    const messagePromise = collectMessages(ws, 1);
+    feed.publishMarketCreated({
+      type: 'market:created',
+      marketId: 'new-market-001',
+      fighterA: 'Fighter A',
+      fighterB: 'Fighter B',
+    });
+
+    await expect(messagePromise).resolves.toEqual([{
+      type: 'market:created',
+      marketId: 'new-market-001',
+      fighterA: 'Fighter A',
+      fighterB: 'Fighter B',
+    }]);
+    ws.close();
+  }, 5000);
+
   // ── Memory leak: subscription cleanup on disconnect ───────────────────────
 
   it('removes all subscriptions from internal maps on disconnect', async () => {

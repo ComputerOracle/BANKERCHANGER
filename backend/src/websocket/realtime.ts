@@ -49,6 +49,13 @@ export type ActivityEvent =
   | { type: 'leaderboard_rank'; marketId: string; address: string; rank: number | null; score: number; timestamp: string }
   | { type: 'indexer_status'; status: 'running' | 'idle' | 'error' | 'syncing'; currentLedger: number; targetLedger: number; timestamp: string };
 
+export type MarketCreatedEvent = {
+  type: 'market:created';
+  marketId: string;
+  fighterA: string;
+  fighterB: string;
+};
+
 /** Pushed to leaderboard subscribers whenever one or more ranks change. */
 export interface LeaderboardRankEvent {
   type: 'leaderboard_rank_update';
@@ -70,6 +77,7 @@ export type LeaderboardRankUpdateEvent = {
 type AuthMsg = { type: 'auth'; token: string };
 type SubscribeMsg =
   | { type: 'subscribe_activity'; marketId: string }
+  | { type: 'subscribe_market_created' }
   | { type: 'subscribe_leaderboard'; leaderboardId?: string }
   | { type: 'unsubscribe_leaderboard'; leaderboardId?: string };
 
@@ -134,6 +142,7 @@ export class ActivityFeed {
   private leaderboardSubscriptions = new Map<string, Set<WebSocket>>();
   // global leaderboard subscriptions
   private globalLeaderboardSubs = new Set<WebSocket>();
+  private globalMarketCreatedSubs = new Set<WebSocket>();
   private rateLimiter = new MarketRateLimiter();
   private clientRateLimiter = new ClientRateLimiter();
   // Track authenticated connections
@@ -316,6 +325,11 @@ export class ActivityFeed {
       return;
     }
 
+    if (msg.type === 'subscribe_market_created') {
+      this.globalMarketCreatedSubs.add(ws);
+      return;
+    }
+
     if (msg.type === 'subscribe_leaderboard') {
       if (this.authScopes.get(ws) !== 'full') {
         ws.send(JSON.stringify({ type: 'error', code: 403, message: 'INSUFFICIENT_SCOPE' }));
@@ -380,6 +394,7 @@ export class ActivityFeed {
 
     // ── Market subscriptions ──────────────────────────────────────────────
     this.globalLeaderboardSubs.delete(ws);
+    this.globalMarketCreatedSubs.delete(ws);
 
     for (const [marketId, sockets] of this.subscriptions.entries()) {
       sockets.delete(ws);
@@ -430,6 +445,13 @@ export class ActivityFeed {
       for (const ws of this.globalLeaderboardSubs) {
         if (ws.readyState === WebSocket.OPEN) ws.send(payload);
       }
+    }
+  }
+
+  publishMarketCreated(event: MarketCreatedEvent): void {
+    const payload = JSON.stringify(event);
+    for (const ws of this.globalMarketCreatedSubs) {
+      if (ws.readyState === WebSocket.OPEN) ws.send(payload);
     }
   }
 
@@ -488,6 +510,7 @@ export class ActivityFeed {
       dist[`leaderboard:${leaderboardId}`] = sockets.size;
     }
     dist['leaderboard:global'] = this.globalLeaderboardSubs.size;
+    dist['market:created'] = this.globalMarketCreatedSubs.size;
     return dist;
   }
 }
