@@ -63,6 +63,15 @@ updates:
     reviewers:
       - "doradenise-jpg"
     open-pull-requests-limit: 5
+    auto-merge:
+      enabled: true
+      update-types:
+        - "minor"
+        - "patch"
+    groups:
+      patch-updates:
+        update-types:
+          - "patch"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
