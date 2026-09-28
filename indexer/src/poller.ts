@@ -1,5 +1,5 @@
 import { rpc, scValToNative } from '@stellar/stellar-sdk';
-import { getCursor, saveCursor, getLastKnownLedger, upsertInvoice } from './db';
+import { getCursor, saveCursor, getLastKnownLedger, upsertInvoice, saveEventsAndCursorAtomic } from './db';
 import { updateLastLedger } from './health';
 import { detectLedgerAnomaly, computeResyncStartLedger } from './ledgerContinuity';
 import { calculateBackoff, loadBackoffConfigFromEnv } from './backoff';
@@ -7,6 +7,31 @@ import { broadcast } from './ws';
 import dotenv from 'dotenv';
 
 dotenv.config();
+
+export const DEFAULT_BATCH_SIZE = 50;
+export const MAX_BATCH_SIZE = 500;
+
+export function resolveBatchSize(envVal: string | undefined = process.env.INDEXER_BATCH_SIZE): number {
+  if (!envVal) return DEFAULT_BATCH_SIZE;
+  const parsed = parseInt(envVal, 10);
+  if (isNaN(parsed) || parsed <= 0) {
+    console.warn(`[WARN] Invalid INDEXER_BATCH_SIZE="${envVal}", falling back to default ${DEFAULT_BATCH_SIZE}`);
+    return DEFAULT_BATCH_SIZE;
+  }
+  if (parsed > MAX_BATCH_SIZE) {
+    console.warn(`[WARN] INDEXER_BATCH_SIZE ${parsed} exceeds maximum ${MAX_BATCH_SIZE}; capping at ${MAX_BATCH_SIZE}`);
+    return MAX_BATCH_SIZE;
+  }
+  return parsed;
+}
+
+export function computeEffectiveBatchSize(ledgerLag: number): number {
+  const baseSize = resolveBatchSize();
+  if (ledgerLag > 1000) {
+    return MAX_BATCH_SIZE;
+  }
+  return baseSize;
+}
 
 const RPC_URL = process.env.SOROBAN_RPC_URL || 'https://soroban-testnet.stellar.org';
 const CONTRACT_ID = process.env.FACTORY_CONTRACT_ADDRESS;
@@ -113,6 +138,10 @@ export async function pollEvents() {
         cursor = '';
       }
 
+      const latestLedger = await getLatestLedger().catch(() => lastProcessedLedger ?? 0);
+      const lag = Math.max(0, latestLedger - (lastProcessedLedger ?? latestLedger));
+      const batchLimit = computeEffectiveBatchSize(lag);
+
       // Build request with proper typing (use any to bypass strict filter type checking)
       const request: any = (cursor && resyncLedger === null)
         ? {
@@ -124,10 +153,10 @@ export async function pollEvents() {
                 topics: [['*']]
               }
             ],
-            limit: 100
+            limit: batchLimit
           }
         : {
-            startLedger: resyncLedger ?? (await getLatestLedger()),
+            startLedger: resyncLedger ?? latestLedger,
             filters: [
               {
                 type: 'contract',
@@ -135,7 +164,7 @@ export async function pollEvents() {
                 topics: [['*']]
               }
             ],
-            limit: 100
+            limit: batchLimit
           };
 
       // Poll for events with pagination support
@@ -157,7 +186,7 @@ export async function pollEvents() {
         // Build request with proper typing
         let paginatedRequest: any = {
           filters,
-          limit: 100,
+          limit: batchLimit,
         };
 
         // Set cursor or startLedger
