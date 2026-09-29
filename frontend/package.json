@@ -10,7 +10,8 @@
     "test": "jest",
     "lint": "next lint",
     "format": "prettier --write 'src/**/*.{ts,tsx}'",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "e2e:cleanup": "node ../backend/scripts/e2e-cleanup.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.0",

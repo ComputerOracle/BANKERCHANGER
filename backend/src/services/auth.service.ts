@@ -80,11 +80,19 @@ function signAccess(
   );
 }
 
-function signRefresh(
-  userId: string,
-  sessionVersion: number,
-  passwordVersion: number = 0,
-): string {
+export function createActivityFeedToken(): string {
+  return jwt.sign(
+    {
+      sub: 'public-market-feed',
+      type: 'ws_activity',
+      scope: 'market_activity:read',
+    },
+    JWT_ACCESS_SECRET,
+    { expiresIn: '5m' } as jwt.SignOptions,
+  );
+}
+
+function signRefresh(userId: string, sessionVersion: number): string {
   return jwt.sign(
     {
       sub: userId,

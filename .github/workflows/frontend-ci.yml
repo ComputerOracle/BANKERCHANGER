@@ -108,6 +108,11 @@ jobs:
         env:
           PLAYWRIGHT_BASE_URL: http://localhost:3000
 
+      - name: Clean up E2E database records
+        if: always()
+        working-directory: frontend
+        run: npm run e2e:cleanup
+
       - name: Upload Playwright trace on failure
         if: failure()
         uses: actions/upload-artifact@v4

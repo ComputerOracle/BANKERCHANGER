@@ -118,6 +118,14 @@ export async function fetchMarketById(market_id: string): Promise<Market> {
   return apiFetch<Market>(`/api/markets/${market_id}`);
 }
 
+export async function fetchActivityFeedToken(): Promise<string> {
+  const result = await apiFetch<{ accessToken: string }>(
+    '/auth/activity-feed-token',
+    { method: 'POST' },
+  );
+  return result.accessToken;
+}
+
 /**
  * Calls GET /api/markets/:market_id/bets.
  * Returns all bets for the market.

@@ -4,7 +4,10 @@
  * Tests that CSP and security headers are present on all page responses.
  */
 
-import { test, expect } from '@playwright/test';
+import { afterAll, test, expect } from '@playwright/test';
+import { cleanupE2eData } from './cleanup';
+
+afterAll(cleanupE2eData);
 
 function parseCsp(header: string): Map<string, string[]> {
   return new Map(
