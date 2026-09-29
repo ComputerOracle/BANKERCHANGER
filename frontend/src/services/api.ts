@@ -19,8 +19,12 @@ import type {
   UserNotification,
 } from '../types';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
-
+const API_BASE = process.env.NEXT_PUBLIC_API_URL;
+if (!API_BASE) {
+  throw new Error(
+    'NEXT_PUBLIC_API_URL is not set. Copy frontend/.env.example to frontend/.env.local and set it, or configure it in your deployment environment.',
+  );
+}
 export class NotFoundError extends Error {
   constructor(message = 'Not found') { super(message); this.name = 'NotFoundError'; }
 }
