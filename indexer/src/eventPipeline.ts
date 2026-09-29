@@ -201,6 +201,8 @@ export function parseEvent(event: any, ledgerSequence: number, batchId: number):
   }
 }
 
+import { validateEventSchema } from "./eventSchemas";
+
 // ─── Event Handlers ──────────────────────────────────────────────────────────
 
 export async function handleEvent(event: ProcessedEvent): Promise<void> {
