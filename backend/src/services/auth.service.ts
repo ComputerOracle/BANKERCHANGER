@@ -94,13 +94,7 @@ export function createActivityFeedToken(): string {
 
 function signRefresh(userId: string, sessionVersion: number): string {
   return jwt.sign(
-    {
-      sub: userId,
-      type: 'refresh',
-      sv: sessionVersion,
-      password_version: passwordVersion,
-      pv: passwordVersion,
-    },
+    { sub: userId, type: 'refresh', sv: sessionVersion, iat: Math.floor(Date.now() / 1000) },
     JWT_REFRESH_SECRET,
     { expiresIn: REFRESH_EXPIRES_IN } as jwt.SignOptions,
   );
@@ -346,12 +340,24 @@ export async function login(
  * Mints a new access token from a refresh token. Rejects tokens that fail
  * signature/expiry checks, tokens whose session has been revoked (password
  * reset), and tokens that were revoked server-side via logout.
+ *
+ * Additionally enforces a maximum absolute lifetime of 30 days from the
+ * original issuance (iat claim), regardless of the JWT expiry claim.
  */
 export async function refreshAccessToken(refreshToken: string): Promise<{ accessToken: string }> {
   const payload = verifyJwt(refreshToken, 'refresh');
   const userId = payload.sub as string;
   const sessionVersion: number = payload.sv ?? 0;
-  const passwordVersion: number | undefined = payload.password_version ?? payload.pv;
+  const issuedAt: number = payload.iat ?? 0;
+
+  // Validate maximum absolute lifetime: 30 days from original issuance
+  const THIRTY_DAYS_SECONDS = 30 * 24 * 60 * 60;
+  const now = Math.floor(Date.now() / 1000);
+  const tokenAge = now - issuedAt;
+
+  if (tokenAge > THIRTY_DAYS_SECONDS) {
+    throw new AppError(401, 'Refresh token has exceeded maximum lifetime (30 days)');
+  }
 
   const revoked = await isSessionRevoked(userId, sessionVersion, passwordVersion);
   if (revoked) throw new AppError(401, 'Session has been invalidated');
