@@ -142,9 +142,21 @@ function parseEvent(event: any, ledgerSequence: number, batchId: number): Proces
   }
 }
 
+import { validateEventSchema } from "./eventSchemas";
+
 // ─── Event Handlers ──────────────────────────────────────────────────────────
 
-async function handleEvent(event: ProcessedEvent): Promise<void> {
+export async function handleEvent(event: ProcessedEvent): Promise<void> {
+  // Validate parsed event data schema before DB write
+  const isValid = validateEventSchema(event.eventType, event.value);
+  if (!isValid) {
+    logger.warn(
+      { eventType: event.eventType, ledgerSequence: event.ledgerSequence },
+      "Skipping event due to schema validation failure",
+    );
+    return;
+  }
+
   const { redis } = await import("./db");
 
   switch (event.eventType) {
