@@ -15,7 +15,7 @@ interface EventBatchConfig {
   maxBackoffMs: number;
 }
 
-interface ProcessedEvent {
+export interface ProcessedEvent {
   type: string;
   contractId: string;
   ledgerSequence: number;
@@ -25,13 +25,75 @@ interface ProcessedEvent {
   batchId: number;
 }
 
-interface BatchResult {
+export interface BatchResult {
   batchId: number;
   startLedger: number;
   endLedger: number;
   eventsProcessed: number;
   errors: string[];
   durationMs: number;
+}
+
+export interface DeadLetterEntry {
+  event: ProcessedEvent;
+  error: string;
+  failedAt: string;
+  attempts: number;
+}
+
+// ─── Known Events & Metrics (#694, #699) ─────────────────────────────────────
+
+export const KNOWN_EVENT_TYPES = new Set([
+  "invoice_created",
+  "invoice_paid",
+  "market_created",
+  "bet_placed",
+  "market_resolved",
+  "liquidity_added",
+  "liquidity_removed",
+]);
+
+export const indexer_unknown_event_types_total: Record<string, number> = {};
+export const deadLetterLog: DeadLetterEntry[] = [];
+
+/**
+ * Distinguishes transient DB errors (connection timeouts, busy locks, deadlocks)
+ * from permanent non-transient errors (constraint violations, schema mismatch).
+ */
+export function isTransientDbError(error: any): boolean {
+  if (!error) return false;
+  const msg = (error.message || String(error)).toLowerCase();
+  const code = (error.code || "").toLowerCase();
+
+  // Non-transient errors
+  if (
+    msg.includes("unique") ||
+    msg.includes("constraint") ||
+    msg.includes("not null") ||
+    msg.includes("foreign key") ||
+    code === "sqlite_constraint"
+  ) {
+    return false;
+  }
+
+  // Transient errors
+  if (
+    msg.includes("econnreset") ||
+    msg.includes("econnrefused") ||
+    msg.includes("etimedout") ||
+    msg.includes("connection") ||
+    msg.includes("deadlock") ||
+    msg.includes("serialization") ||
+    msg.includes("busy") ||
+    msg.includes("locked") ||
+    msg.includes("timeout") ||
+    code === "sqlite_busy" ||
+    code === "sqlite_locked"
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 // ─── Configuration by Batch ──────────────────────────────────────────────────
@@ -58,7 +120,6 @@ export async function processEventBatch(
   logger.info({ batchId, startLedger, batchSize: config.batchSize }, "Starting event batch processing");
 
   try {
-    // Fetch events for the batch range
     const endLedger = startLedger + config.batchSize - 1;
     const response = await server.getEvents({
       startLedger,
@@ -66,7 +127,6 @@ export async function processEventBatch(
       limit: 1000,
     });
 
-    // Process events in order
     for (const event of response.events) {
       try {
         const parsed = parseEvent(event, currentLedger, batchId);
@@ -82,7 +142,6 @@ export async function processEventBatch(
       currentLedger++;
     }
 
-    // Save cursor and update health
     await saveCursor(endLedger);
     await updateLastLedger(endLedger);
 
@@ -112,7 +171,7 @@ export async function processEventBatch(
 
 // ─── Event Parsing ───────────────────────────────────────────────────────────
 
-function parseEvent(event: any, ledgerSequence: number, batchId: number): ProcessedEvent | null {
+export function parseEvent(event: any, ledgerSequence: number, batchId: number): ProcessedEvent | null {
   try {
     const contractId = event.contractId;
     const eventType = event.type;
@@ -147,33 +206,80 @@ import { validateEventSchema } from "./eventSchemas";
 // ─── Event Handlers ──────────────────────────────────────────────────────────
 
 export async function handleEvent(event: ProcessedEvent): Promise<void> {
-  // Validate parsed event data schema before DB write
-  const isValid = validateEventSchema(event.eventType, event.value);
-  if (!isValid) {
+  // Check for unknown event types (#694)
+  if (!KNOWN_EVENT_TYPES.has(event.eventType)) {
+    indexer_unknown_event_types_total[event.eventType] =
+      (indexer_unknown_event_types_total[event.eventType] || 0) + 1;
     logger.warn(
-      { eventType: event.eventType, ledgerSequence: event.ledgerSequence },
-      "Skipping event due to schema validation failure",
+      {
+        eventType: event.eventType,
+        batchId: event.batchId,
+        metric: `indexer_unknown_event_types_total{type="${event.eventType}"}`,
+        count: indexer_unknown_event_types_total[event.eventType],
+      },
+      `Unknown event type "${event.eventType}" encountered; logging warning and skipping without throwing`,
     );
     return;
+  }
+
+  // Helper for DB write with transient retry (#699)
+  async function writeWithTransientRetry(action: () => Promise<void>) {
+    const maxRetries = 3;
+    let lastError: any = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await action();
+        return;
+      } catch (err: any) {
+        lastError = err;
+        if (!isTransientDbError(err)) {
+          logger.error({ err, eventType: event.eventType }, "Non-transient DB error; failing immediately without retry");
+          throw err;
+        }
+
+        logger.warn(
+          { attempt, maxRetries, err: err.message, eventType: event.eventType },
+          "Transient DB error during event write; retrying",
+        );
+        if (attempt < maxRetries) {
+          await new Promise((resolve) => setTimeout(resolve, 50 * Math.pow(2, attempt - 1)));
+        }
+      }
+    }
+
+    // Exhausted retries: write to dead-letter log table
+    deadLetterLog.push({
+      event,
+      error: lastError?.message || String(lastError),
+      failedAt: new Date().toISOString(),
+      attempts: maxRetries,
+    });
+    logger.error({ event, err: lastError }, "Batch write exhausted transient retries; written to dead-letter log");
+    throw lastError;
   }
 
   const { redis } = await import("./db");
 
   switch (event.eventType) {
     case "invoice_created":
-      await upsertInvoice({
-        contractId: event.contractId,
-        ledgerSequence: event.ledgerSequence,
-        data: event.value,
-      });
+      await writeWithTransientRetry(() =>
+        upsertInvoice({
+          contractId: event.contractId,
+          ledgerSequence: event.ledgerSequence,
+          data: event.value,
+        }),
+      );
       break;
 
     case "invoice_paid":
-      await upsertInvoice({
-        contractId: event.contractId,
-        ledgerSequence: event.ledgerSequence,
-        data: { ...event.value, status: "paid" },
-      });
+      await writeWithTransientRetry(() =>
+        upsertInvoice({
+          contractId: event.contractId,
+          ledgerSequence: event.ledgerSequence,
+          data: { ...event.value, status: "paid" },
+        }),
+      );
       break;
 
     case "market_created":
@@ -181,14 +287,9 @@ export async function handleEvent(event: ProcessedEvent): Promise<void> {
     case "market_resolved":
     case "liquidity_added":
     case "liquidity_removed":
-      // These events are published for real-time updates
       break;
-
-    default:
-      logger.debug({ eventType: event.eventType, batchId: event.batchId }, "Unknown event type");
   }
 
-  // Publish to WebSocket channel for real-time updates
   await redis.publish(
     "indexer_events",
     JSON.stringify({
