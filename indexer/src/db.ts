@@ -244,3 +244,38 @@ export function getInvoices(filters: { status?: string, freelancer?: string, pay
 export function getInvoiceById(id: string): InvoiceRecord | undefined {
   return db.prepare('SELECT * FROM invoices WHERE id = ?').get(id) as InvoiceRecord | undefined;
 }
+
+/**
+ * Inserts a processed event using INSERT ... ON CONFLICT (tx_hash, event_index) DO NOTHING (Issue #687).
+ * Returns true if the event is newly inserted, false if it already existed (duplicate).
+ */
+export function recordProcessedEvent(
+  txHash: string,
+  eventIndex: number,
+  eventType?: string,
+  ledger?: number,
+  payload?: string,
+): boolean {
+  try {
+    const res = getDb().prepare(`
+      INSERT INTO blockchain_events (tx_hash, event_index, event_type, ledger, payload)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (tx_hash, event_index) DO NOTHING
+    `).run(txHash, eventIndex, eventType ?? null, ledger ?? null, payload ?? null);
+    return res.changes > 0;
+  } catch (err) {
+    console.error('Error inserting processed event:', err);
+    return false;
+  }
+}
+
+export function isEventProcessed(txHash: string, eventIndex: number): boolean {
+  try {
+    const row = getDb().prepare(
+      'SELECT 1 FROM blockchain_events WHERE tx_hash = ? AND event_index = ?'
+    ).get(txHash, eventIndex);
+    return !!row;
+  } catch {
+    return false;
+  }
+}

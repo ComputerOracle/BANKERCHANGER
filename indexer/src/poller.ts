@@ -73,6 +73,17 @@ export function getPollerHealth(): PollerHealth {
   return { ...pollerHealth };
 }
 
+// ── Duplicate events skipped metric (Issue #687) ───────────────────────────
+export let indexer_duplicate_events_skipped_total = 0;
+
+export function getIndexerDuplicateEventsSkippedTotal(): number {
+  return indexer_duplicate_events_skipped_total;
+}
+
+export function resetIndexerDuplicateEventsSkippedTotal(): void {
+  indexer_duplicate_events_skipped_total = 0;
+}
+
 // ── Exponential backoff strategy (tunable via POLLER_*_BACKOFF_MS env vars) ─
 const BACKOFF_CONFIG = loadBackoffConfigFromEnv();
 
@@ -198,12 +209,17 @@ export async function pollEvents() {
 
         const response = await server.getEvents(paginatedRequest);
 
-        // Process all events on this page
+        // Process all events on this page grouped by ledger sequence
         if (response.events && response.events.length > 0) {
+          const eventsByLedger: Map<number, rpc.Api.EventResponse[]> = new Map();
           for (const event of response.events) {
-            const eventLedger = event.ledger;
+            const l = event.ledger || 0;
+            if (!eventsByLedger.has(l)) eventsByLedger.set(l, []);
+            eventsByLedger.get(l)!.push(event);
+          }
 
-            if (eventLedger) {
+          for (const [eventLedger, ledgerEvents] of eventsByLedger) {
+            if (eventLedger > 0) {
               const anomaly = detectLedgerAnomaly(eventLedger, lastProcessedLedger);
 
               if (anomaly.type === 'reorg') {
@@ -236,9 +252,13 @@ export async function pollEvents() {
               }
             }
 
-            processEvent(event);
+            // Commit all events in this ledger first
+            for (const event of ledgerEvents) {
+              processEvent(event);
+            }
 
-            if (eventLedger) {
+            // Last processed ledger saved ONLY after all events in that ledger are committed (Issue #687)
+            if (eventLedger > 0) {
               lastProcessedLedger = eventLedger;
               updateLastLedger(eventLedger);
             }
@@ -346,7 +366,7 @@ async function getLatestLedger(): Promise<number> {
   }
 }
 
-export function processEvent(event: rpc.Api.EventResponse) {
+export function processEvent(event: rpc.Api.EventResponse): boolean {
   // Topics are scVals, typically symbol strings
   const topics = event.topic.map((t: any) => {
     try {
@@ -357,7 +377,29 @@ export function processEvent(event: rpc.Api.EventResponse) {
   });
 
   const eventType = topics[0]; // e.g. 'submitted', 'funded', 'paid', 'defaulted'
-  if (!eventType) return;
+  if (!eventType) return false;
+
+  const txHash = (event as any).txHash || (event as any).id || (event as any).pagingToken || `evt-${event.ledger ?? 0}-${Date.now()}`;
+  const eventIndex = (event as any).eventIndex ?? (event as any).inTxOrder ?? 0;
+
+  // Deduplicate event using INSERT ... ON CONFLICT (tx_hash, event_index) DO NOTHING (Issue #687)
+  const isNew = recordProcessedEvent(
+    txHash,
+    eventIndex,
+    String(eventType),
+    event.ledger,
+    JSON.stringify(event.value),
+  );
+  if (!isNew) {
+    indexer_duplicate_events_skipped_total++;
+    log('info', 'Duplicate event skipped across restarts', {
+      txHash,
+      eventIndex,
+      eventType,
+      ledger: event.ledger,
+    });
+    return false;
+  }
 
   try {
     const data = scValToNative(event.value);
