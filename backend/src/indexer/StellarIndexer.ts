@@ -503,6 +503,15 @@ function broadcastIndexedEvent(event: RawStellarEvent): void {
   const marketId = typeof p.market_id === 'string' ? p.market_id : '';
   if (!marketId) return;
 
+  if (event.event_type === 'market_created') {
+    feed.publishMarketCreated({
+      type: 'market:created',
+      marketId,
+      fighterA: String(p.fighter_a ?? ''),
+      fighterB: String(p.fighter_b ?? ''),
+    });
+  }
+
   let activityEvent: ActivityEvent;
   if (event.event_type === 'bet_placed') {
     activityEvent = {
