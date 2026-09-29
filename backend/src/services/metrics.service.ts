@@ -81,11 +81,11 @@ export const cronBlockchainEventsDeleted = new Counter({
   help: 'Total processed blockchain_events rows deleted by cleanup cron',
 });
 
-// ── Indexer Event Deduplication Metrics (Issue #687) ──────────────────────────
+// ── Indexer Gap Recovery Metrics (Issue #673) ─────────────────────────────────
 
-export const indexerDuplicateEventsSkippedTotal = new Counter({
-  name: 'indexer_duplicate_events_skipped_total',
-  help: 'Total duplicate events skipped across restarts by indexer poller',
+export const indexerGapBackfillTotal = new Counter({
+  name: 'indexer_gap_backfill_total',
+  help: 'Total missing ledgers backfilled during gap recovery',
 });
 
 export { register };
