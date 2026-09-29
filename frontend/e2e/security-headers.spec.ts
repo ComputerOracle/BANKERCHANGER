@@ -9,8 +9,34 @@ import { cleanupE2eData } from './cleanup';
 
 afterAll(cleanupE2eData);
 
+function parseCsp(header: string): Map<string, string[]> {
+  return new Map(
+    header
+      .split(';')
+      .map((directive) => directive.trim().split(/\s+/))
+      .filter(([name]) => name)
+      .map(([name, ...sources]) => [name.toLowerCase(), sources]),
+  );
+}
+
 test.describe('Security Headers', () => {
   const pages = ['/', '/portfolio', '/markets'];
+  const requiredCspDirectives = {
+    'default-src': ["'self'"],
+    'script-src': ["'self'", "'unsafe-inline'", "'unsafe-eval'"],
+    'style-src': ["'self'", "'unsafe-inline'"],
+    'img-src': ["'self'", 'data:', 'https:'],
+    'font-src': ["'self'", 'data:'],
+    'connect-src': [
+      "'self'",
+      'https://horizon-testnet.stellar.org',
+      'https://horizon.stellar.org',
+      'https://soroban-testnet.stellar.org',
+      'https://soroban-rpc.stellar.org',
+    ],
+    'frame-ancestors': ["'none'"],
+    'object-src': ["'none'"],
+  };
 
   pages.forEach((pagePath) => {
     test(`CSP header present on ${pagePath}`, async ({ page }) => {
@@ -20,9 +46,14 @@ test.describe('Security Headers', () => {
       
       const cspHeader = response?.headers()['content-security-policy'];
       expect(cspHeader).toBeDefined();
-      expect(cspHeader).toContain("default-src 'self'");
-      expect(cspHeader).toContain('soroban-testnet.stellar.org');
-      expect(cspHeader).toContain('horizon-testnet.stellar.org');
+
+      const directives = parseCsp(cspHeader!);
+      expect([...directives.keys()].sort()).toEqual(
+        Object.keys(requiredCspDirectives).sort(),
+      );
+      for (const [name, expectedSources] of Object.entries(requiredCspDirectives)) {
+        expect(directives.get(name)?.sort()).toEqual([...expectedSources].sort());
+      }
     });
 
     test(`X-Frame-Options header present on ${pagePath}`, async ({ page }) => {
